@@ -112,6 +112,14 @@ class SpellAssist(tk.Frame):
         self.displaybox = tk.Text(self.parent, font=self.font, height=1, width=20)
         self.displaybox.config(state=tk.DISABLED)
 
+        # Set the displaybox at first
+        to_set = generate_color_text(self.correct_word, "", show_all=self._state == State.zero)
+
+        self.delete_display_contents(0, tk.END)
+        for ent in to_set:
+            self.update_display(ent['ch'], ent['color'])
+
+
     def update_display(self, text, tag=None):
         self.displaybox.config(state=tk.NORMAL)
         if not tag == None:
@@ -166,6 +174,7 @@ class SpellAssist(tk.Frame):
             l = len(self.get_display_contents())
             self.delete_display_contents(l-2, tk.END)
         # pprint(stuff.char)
+
         return rv
 
 
