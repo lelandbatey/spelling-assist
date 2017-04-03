@@ -1,0 +1,143 @@
+#! /usr/bin/env python3
+
+from pprint import pprint
+import tkinter as tk
+import sys
+
+import google
+
+class State:
+    zero = "zero"
+    one = "one"
+    two = "two"
+    three = "three"
+
+BACKSPACE = '\x08'
+GREEN = 'GREEN'
+RED = 'RED'
+BLACK = 'BLACK'
+
+def generate_color_text(correct, candidate, show_all=False):
+    candidate = candidate.replace('\n', '')
+    # pprint((correct, candidate))
+    rv = []
+    for idx, ch in enumerate(correct):
+        if show_all and idx >= len(candidate):
+            itm = dict()
+            itm['pos'] = idx
+            itm['color'] = BLACK
+            itm['ch'] = ch
+            rv.append(itm)
+            continue
+
+        if idx >= len(candidate):
+            break
+        cand_ch = candidate[idx]
+        itm = dict()
+        itm['pos'] = idx
+        itm['color'] = GREEN
+        if not cand_ch == ch:
+            itm['color'] = RED
+        itm['ch'] = cand_ch
+        rv.append(itm)
+    return rv
+
+def next_state(cur):
+    states = [State.zero, State.one, State.two, State.three]
+    idx = states.index(cur)
+    idx += 1
+    return states[idx % len(states)]
+
+
+class SpellAssist(tk.Frame):
+    def __init__(self, correct_word, parent):
+        self.correct_word = correct_word
+        super().__init__(parent)
+        self.parent = parent
+
+        self.font = ('TkTextFont', '18')
+
+        self._state = State.zero
+        self.inputbox = tk.Entry(self.parent, font=self.font)
+        self.inputbox.focus_set()
+        self.inputbox.bind('<Key>', self.key_callback)
+
+        self.displaybox = tk.Text(self.parent, font=self.font, height=1, width=20)
+        self.displaybox.config(state=tk.DISABLED)
+
+    def update_display(self, text, tag=None):
+        self.displaybox.config(state=tk.NORMAL)
+        if not tag == None:
+            self.displaybox.insert(tk.END, text, tag)
+        else:
+            self.displaybox.insert(tk.END, text)
+        self.displaybox.config(state=tk.DISABLED)
+
+    def get_display_contents(self):
+        self.displaybox.config(state=tk.NORMAL)
+        rv = self.displaybox.get(1.0, tk.END)
+        # print(rv)
+        self.displaybox.config(state=tk.DISABLED)
+        return rv
+
+    def delete_display_contents(self, start, end):
+        self.displaybox.config(state=tk.NORMAL)
+        self.displaybox.delete("1.{}".format(start), end)
+        self.displaybox.config(state=tk.DISABLED)
+        return
+
+    def key_callback(self, stuff):
+        rv = None
+        c = stuff.char
+        if c.isalpha():
+            current = self.inputbox.get()
+            l = len(current)
+
+            to_set = generate_color_text(self.correct_word, current+c, show_all=self._state == State.zero)
+            #print(to_set)
+
+            self.delete_display_contents(0, tk.END)
+            for ent in to_set:
+                self.update_display(ent['ch'], ent['color'])
+
+            if len(self.inputbox.get()+c) == len(self.correct_word):
+                #print("moving to next state")
+                self._state = next_state(self._state)
+                if RED in [k['color'] for k in to_set]:
+                    self._state = State.zero
+                self.delete_display_contents(0, tk.END)
+                self.inputbox.delete(0, tk.END)
+                rv = 'break'
+
+            if self._state == State.three:
+                self.parent.quit()
+
+            self.displaybox.tag_config(GREEN, foreground="green")
+            self.displaybox.tag_config(BLACK, foreground="black")
+            self.displaybox.tag_config(RED, foreground="red")
+        elif c == BACKSPACE:
+            l = len(self.get_display_contents())
+            self.delete_display_contents(l-2, tk.END)
+        # pprint(stuff.char)
+        return rv
+
+
+if __name__ == '__main__':
+    text = sys.argv[1]
+    corrected = google.get_google_spelling(text)
+    # print(text, corrected)
+
+    if text == corrected:
+        sys.exit(0)
+
+    root = tk.Tk()
+    root.title('Spelling Assist')
+    assist = SpellAssist(corrected, root)
+    assist.grid(row=0, column=0)
+    assist.inputbox.grid(row=0, column=0)
+    assist.displaybox.grid(row=1, column=0)
+    ft = assist.inputbox['font']
+    # print(ft)
+
+    root.mainloop()
+
