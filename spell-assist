@@ -1,8 +1,42 @@
 #! /usr/bin/env python3
 
+'''
+A tool for building typing muscle memory for words you usually misspell.
+'''
+
 from pprint import pprint
 import tkinter as tk
+import tkinter.filedialog as filedialog
+import time
 import sys
+
+import threading
+import logging
+
+
+def concurrent(f):
+    """Concurrent is a decorator for a function which will cause that function
+    to immediately return when called, but be left running in 'in the
+    background'. It is intended as a functional equivalent to the 'go func()'
+    syntax in the Go programming language."""
+
+    def err_logger(*args, **kwargs):
+        '''
+        err_logger logs uncaught exceptions, which is nice to have in long
+        running processes in other threads.
+        '''
+        try:
+            f(*args, **kwargs)
+        except Exception as e:
+            logging.error(e, exc_info=True)
+
+    def rv(*args, **kwargs):
+        t = threading.Thread(target=err_logger, args=(args), kwargs=kwargs)
+        t.daemon = True
+        t.start()
+
+    return rv
+
 
 """Takes a phrase as input and Googles it.
 If Google thinks the phrase should be different, print Google's phrase to standard out,
@@ -11,6 +45,7 @@ otherwise print the input phrase to standard out"""
 import sys
 import requests
 from bs4 import BeautifulSoup
+
 
 def get_google_spelling(phrase):
     """Return how google would spell the phrase"""
@@ -29,40 +64,42 @@ def get_google_spelling(phrase):
 def get_spell_tag(page):
     """Get out the tag that has the Google spelling or is empty"""
     soup = BeautifulSoup(page.text, 'html.parser')
-    spell_tag = soup.find('a', {'class' : 'spell'})
+    spell_tag = soup.find('a', {'class': 'spell'})
 
     return spell_tag
+
 
 def get_page(search):
     """Get Google html page that has Google spelling and/or same spelling"""
     headers = {
-        "User-Agent" :
-            "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:42.0) Gecko/20100101 Firefox/42.0",
+        "User-Agent":
+        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:42.0) Gecko/20100101 Firefox/42.0",
     }
     url = 'http://google.com/search?h1=en&q=' + search + "&meta=&gws_rd=ssl"
     page = requests.get(url, headers=headers)
     return page
 
-def parse_search_request():
-    """Parses stdin first, if None then parses command line arguments to get search request for Google spell checking"""
-    if sys.stdin.isatty():
-        return ' '.join(sys.argv[1:])
-    stdin_list = sys.stdin.readlines()
-    stdin = ''.join(stdin_list)
-    return stdin
-
-
 
 class State:
+    paused = 'paused'
     zero = "zero"
     one = "one"
     two = "two"
     three = "three"
 
+
+def next_state(cur):
+    states = [State.zero, State.one, State.two, State.three]
+    idx = states.index(cur)
+    idx += 1
+    return states[idx % len(states)]
+
+
 BACKSPACE = '\x08'
 GREEN = 'GREEN'
 RED = 'RED'
 BLACK = 'BLACK'
+
 
 def generate_color_text(correct, candidate, show_all=False):
     candidate = candidate.replace('\n', '')
@@ -89,12 +126,6 @@ def generate_color_text(correct, candidate, show_all=False):
         rv.append(itm)
     return rv
 
-def next_state(cur):
-    states = [State.zero, State.one, State.two, State.three]
-    idx = states.index(cur)
-    idx += 1
-    return states[idx % len(states)]
-
 
 class SpellAssist(tk.Frame):
     def __init__(self, correct_word, parent):
@@ -109,16 +140,11 @@ class SpellAssist(tk.Frame):
         self.inputbox.focus_set()
         self.inputbox.bind('<Key>', self.key_callback)
 
-        self.displaybox = tk.Text(self.parent, font=self.font, height=1, width=20)
+        self.displaybox = tk.Text(
+            self.parent, font=self.font, height=1, width=20)
         self.displaybox.config(state=tk.DISABLED)
 
-        # Set the displaybox at first
-        to_set = generate_color_text(self.correct_word, "", show_all=self._state == State.zero)
-
-        self.delete_display_contents(0, tk.END)
-        for ent in to_set:
-            self.update_display(ent['ch'], ent['color'])
-
+        self.set_uistate_zero()
 
     def update_display(self, text, tag=None):
         self.displaybox.config(state=tk.NORMAL)
@@ -131,7 +157,6 @@ class SpellAssist(tk.Frame):
     def get_display_contents(self):
         self.displaybox.config(state=tk.NORMAL)
         rv = self.displaybox.get(1.0, tk.END)
-        # print(rv)
         self.displaybox.config(state=tk.DISABLED)
         return rv
 
@@ -141,59 +166,125 @@ class SpellAssist(tk.Frame):
         self.displaybox.config(state=tk.DISABLED)
         return
 
+    def set_uistate_zero(self):
+        '''Resets the state for the spelling assist to the 'zero' state, which
+        is special. In the zero state, we display the entirety of the word to
+        be learned, with correctly-typed characters in green and un-entered
+        characters in black. This is to help guide the student by letting them
+        see the whole word they're trying to learn. Non-zero states don't
+        display the un-entered letters.'''
+        # Set the displaybox at first
+        to_set = generate_color_text(
+            self.correct_word, "", show_all=self._state == State.zero)
+
+        self.delete_display_contents(0, tk.END)
+        for ent in to_set:
+            self.update_display(ent['ch'], ent['color'])
+        # Delete the contents of the input box
+        self.inputbox.delete(0, tk.END)
+
     def key_callback(self, stuff):
+        @concurrent
+        def deferred_set_uistate_zero():
+            time.sleep(0.3)
+            self._state = State.zero
+            self.set_uistate_zero()
+
+        @concurrent
+        def deferred_erase_bothboxes(newstate):
+            time.sleep(0.3)
+            self.delete_display_contents(0, tk.END)
+            self.inputbox.delete(0, tk.END)
+            self._state = newstate
+            if self._state == State.three:
+                self.parent.quit()
+
+        # If our state is "paused" we return the string 'break' which prevents
+        # the default handling of this event, which would be the placing of the
+        # typed key into the Entry-box.
+        if self._state == State.paused:
+            return 'break'
+
         rv = None
         c = stuff.char
         if c.isalpha():
             current = self.inputbox.get()
             l = len(current)
 
-            to_set = generate_color_text(self.correct_word, current+c, show_all=self._state == State.zero)
-            #print(to_set)
+            # Every time a characters pressed, we re-draw all the characters in
+            # the comparison box. We do this because keeping track of letters
+            # and their colors is harder than just deleting and redrawing on
+            # each keypress.
+            to_set = generate_color_text(
+                self.correct_word,
+                current + c,
+                show_all=self._state == State.zero)
 
             self.delete_display_contents(0, tk.END)
             for ent in to_set:
                 self.update_display(ent['ch'], ent['color'])
 
-            if len(self.inputbox.get()+c) == len(self.correct_word):
-                #print("moving to next state")
-                self._state = next_state(self._state)
-                if RED in [k['color'] for k in to_set]:
-                    self._state = State.zero
-                self.delete_display_contents(0, tk.END)
-                self.inputbox.delete(0, tk.END)
+            # If there's a red character (a miss-typed character), then we
+            # place our state into a "paused" state where we don't accept
+            # further typed input and launch a deferred "reset everything to
+            # state zero".
+            if RED in [k['color'] for k in to_set]:
+                self._state = State.paused
+                deferred_set_uistate_zero()
                 rv = 'break'
 
-            if self._state == State.three:
-                self.parent.quit()
+            # If all the characters where entered correctly, we jump to the
+            # next state and delete the contents of both boxes.
+            if len(self.inputbox.get() + c) == len(self.correct_word):
+                nstate = next_state(self._state)
+                self._state = State.paused
+                deferred_erase_bothboxes(nstate)
 
             self.displaybox.tag_config(GREEN, foreground="green")
             self.displaybox.tag_config(BLACK, foreground="black")
             self.displaybox.tag_config(RED, foreground="red")
         elif c == BACKSPACE:
             l = len(self.get_display_contents())
-            self.delete_display_contents(l-2, tk.END)
-        # pprint(stuff.char)
+            self.delete_display_contents(l - 2, tk.END)
 
         return rv
 
 
 if __name__ == '__main__':
-    text = sys.argv[1]
-    corrected = get_google_spelling(text)
-    # print(text, corrected)
-
-    if text == corrected:
-        sys.exit(0)
+    text = ""
+    if len(sys.argv) > 1:
+        text = sys.argv[1]
 
     root = tk.Tk()
+    # This right here is what we have to do to get i3 to correctly display this
+    # window as a floating window by default. This value is taken from the Tcl
+    # source code for the Tk package, under `library/dialog.tcl`, line 81 (as
+    # of April 2017). By setting this Tk attribute, Tk changes the X11 hinting
+    # value:
+    #
+    #     _NET_WM_WINDOW_TYPE(ATOM) = _NET_WM_WINDOW_TYPE_DIALOG
+    #
+    # Which is the necessary X11 hint for i3 to launch a window as a floating
+    # window instead of forcibly tiling it.
+    root.attributes('-type', 'dialog')
     root.title('Spelling Assist')
+
+    if not text:
+        text = root.selection_get(selection='PRIMARY')
+        print('Using "{}" from clipboard.'.format(text))
+
+    corrected = get_google_spelling(text)
+    if text == corrected:
+        print("The input word '{}' is already spelled correctly according to Google.".format(text))
+        root.quit()
+        sys.exit(0)
+
+    root.focus()
+
     assist = SpellAssist(corrected, root)
     assist.grid(row=0, column=0)
     assist.inputbox.grid(row=0, column=0)
     assist.displaybox.grid(row=1, column=0)
     ft = assist.inputbox['font']
-    # print(ft)
 
     root.mainloop()
-
